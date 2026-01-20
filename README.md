@@ -10,6 +10,7 @@
 manus-web-agent/
 ├── src/
 │   ├── manus_web_agent/        # 项目包
+│   │   ├── application/        # 应用层
 │   │   ├── core/               # 核心层
 │   │   ├── domain/             # 领域层：包含核心业务逻辑
 │   │   ├── infrastructure/     # 基础设施层：提供技术实现

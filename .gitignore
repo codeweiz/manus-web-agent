@@ -123,3 +123,4 @@ mcp.json
 !frontend/src/lib/
 
 uv.lock
+.config.toml
