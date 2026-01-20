@@ -1,0 +1,17 @@
+[project]
+name = "manus-web-agent"
+version = "0.1.0"
+description = "A tribute to Manus, dedicated to build the best web agents"
+readme = "README.md"
+authors = [
+    { name = "codeweiz", email = "13955645241@163.com" }
+]
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+manus-web-agent = "manus_web_agent:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
