@@ -10,6 +10,7 @@ from mcp.types import Tool
 
 from manus_web_agent.domain.models.mcp_config import MCPConfig, MCPServerConfig, MCPTransport
 from manus_web_agent.domain.models.tool_result import ToolResult
+from manus_web_agent.domain.services.tools.base import BaseTool
 
 logger = logging.getLogger(__name__)
 
@@ -270,3 +271,38 @@ class MCPClientManager:
         except Exception as e:
             logger.error(f"清理 MCP 客户端管理器失败: {e}")
             raise e
+
+
+class MCPTool(BaseTool):
+    """MCP 工具"""
+    name: str = "mcp"
+
+    def __init__(self):
+        super().__init__()
+        self._initialized = False
+        self._tools = []
+
+    async def initialized(self, config: Optional[MCPConfig] = None):
+        """确保管理器已初始化"""
+        if not self._initialized:
+            self.manager = MCPClientManager(config)
+            await self.manager.initialize()
+            self._tools = await self.manager.get_all_tools()
+            self._initialized = True
+
+    def get_tools(self) -> List[Dict[str, Any]]:
+        """获取工具列表"""
+        return self._tools
+
+    def has_function(self, function_name: str) -> bool:
+        """检查是否具有指定工具"""
+        return function_name in [tool["function"]["name"] for tool in self._tools]
+
+    async def invoke_function(self, function_name: str, **kwargs) -> ToolResult:
+        """调用工具"""
+        return await self.manager.call_tool(function_name, kwargs)
+
+    async def cleanup(self):
+        """销毁"""
+        if self.manager:
+            await self.manager.cleanup()
