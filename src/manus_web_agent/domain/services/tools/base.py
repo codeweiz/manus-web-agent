@@ -89,7 +89,7 @@ class BaseTool:
         filters_kwargs = {}
         for param_name, param_value in kwargs.items():
             if param_name in sig.parameters:
-                filters_kwargs[param_name] = kwargs[param_value]
+                filters_kwargs[param_name] = param_value
 
         return filters_kwargs
 
