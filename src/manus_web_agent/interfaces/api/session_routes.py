@@ -1,3 +1,5 @@
+"""会话路由"""
+
 import asyncio
 import logging
 from datetime import datetime
@@ -8,11 +10,16 @@ from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
 from sse_starlette.event import ServerSentEvent
 from sse_starlette.sse import EventSourceResponse
 
-from manus_web_agent.domain.services.agent_domain_service import AgentDomainService
+from manus_web_agent.application.errors.exceptions import NotFoundError, UnauthorizedError
+from manus_web_agent.application.services.agent_service import AgentService
+from manus_web_agent.application.services.file_service import FileService
+from manus_web_agent.domain.models.file import FileInfo
 from manus_web_agent.interfaces.dependencies import (
-    get_agent_domain_service,
+    get_agent_service,
     get_current_user,
+    get_file_service,
     get_optional_current_user,
+    get_token_service,
     verify_signature_websocket,
 )
 from manus_web_agent.interfaces.schemas.base import APIResponse
@@ -21,7 +28,6 @@ from manus_web_agent.interfaces.schemas.file import FileViewRequest, FileViewRes
 from manus_web_agent.interfaces.schemas.resource import AccessTokenRequest, SignedUrlResponse
 from manus_web_agent.interfaces.schemas.session import (
     ChatRequest,
-    ConsoleRecord,
     CreateSessionResponse,
     GetSessionResponse,
     ListSessionItem,
@@ -41,29 +47,30 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 @router.put("", response_model=APIResponse[CreateSessionResponse])
 async def create_session(
     current_user: dict = Depends(get_current_user),
-    agent_service: AgentDomainService = Depends(get_agent_domain_service),
+    agent_service: AgentService = Depends(get_agent_service),
 ) -> APIResponse[CreateSessionResponse]:
     """创建新会话"""
-    # TODO: 实现创建会话逻辑
-    session_id = "temp_session_id"
-    return APIResponse.success(CreateSessionResponse(session_id=session_id))
+    session = await agent_service.create_session(current_user.get("id"))
+    return APIResponse.success(CreateSessionResponse(session_id=session.id))
 
 
 @router.get("/{session_id}", response_model=APIResponse[GetSessionResponse])
 async def get_session(
     session_id: str,
     current_user: dict = Depends(get_current_user),
-    agent_service: AgentDomainService = Depends(get_agent_domain_service),
+    agent_service: AgentService = Depends(get_agent_service),
 ) -> APIResponse[GetSessionResponse]:
     """获取会话详情"""
-    # TODO: 实现获取会话逻辑
+    session = await agent_service.get_session(session_id, current_user.get("id"))
+    if not session:
+        raise NotFoundError("会话不存在")
     return APIResponse.success(
         GetSessionResponse(
-            session_id=session_id,
-            title="Test Session",
-            status="pending",
-            events=[],
-            is_shared=False,
+            session_id=session.id,
+            title=session.title,
+            status=session.status,
+            events=await EventMapper.events_to_sse_events(session.events),
+            is_shared=session.is_shared,
         )
     )
 
@@ -72,10 +79,12 @@ async def get_session(
 async def delete_session(
     session_id: str,
     current_user: dict = Depends(get_current_user),
-    agent_service: AgentDomainService = Depends(get_agent_domain_service),
+    agent_service: AgentService = Depends(get_agent_service),
 ) -> APIResponse[None]:
     """删除会话"""
-    # TODO: 实现删除会话逻辑
+    success = await agent_service.delete_session(session_id, current_user.get("id"))
+    if not success:
+        raise NotFoundError("会话不存在")
     return APIResponse.success()
 
 
@@ -83,10 +92,10 @@ async def delete_session(
 async def stop_session(
     session_id: str,
     current_user: dict = Depends(get_current_user),
-    agent_service: AgentDomainService = Depends(get_agent_domain_service),
+    agent_service: AgentService = Depends(get_agent_service),
 ) -> APIResponse[None]:
     """停止会话"""
-    await agent_service.stop_session(session_id)
+    await agent_service.stop_session(session_id, current_user.get("id"))
     return APIResponse.success()
 
 
@@ -94,34 +103,61 @@ async def stop_session(
 async def clear_unread_message_count(
     session_id: str,
     current_user: dict = Depends(get_current_user),
-    agent_service: AgentDomainService = Depends(get_agent_domain_service),
+    agent_service: AgentService = Depends(get_agent_service),
 ) -> APIResponse[None]:
     """清除未读消息计数"""
-    # TODO: 实现清除未读消息计数逻辑
+    await agent_service.clear_unread_message_count(session_id, current_user.get("id"))
     return APIResponse.success()
 
 
 @router.get("", response_model=APIResponse[ListSessionResponse])
 async def get_all_sessions(
     current_user: dict = Depends(get_current_user),
-    agent_service: AgentDomainService = Depends(get_agent_domain_service),
+    agent_service: AgentService = Depends(get_agent_service),
 ) -> APIResponse[ListSessionResponse]:
     """获取所有会话"""
-    # TODO: 实现获取所有会话逻辑
-    return APIResponse.success(ListSessionResponse(sessions=[]))
+    sessions = await agent_service.get_all_sessions(current_user.get("id"))
+    session_items = [
+        ListSessionItem(
+            session_id=session.id,
+            title=session.title,
+            status=session.status,
+            unread_message_count=session.unread_message_count,
+            latest_message=session.latest_message,
+            latest_message_at=int(session.latest_message_at.timestamp())
+            if session.latest_message_at
+            else None,
+            is_shared=session.is_shared,
+        )
+        for session in sessions
+    ]
+    return APIResponse.success(ListSessionResponse(sessions=session_items))
 
 
 @router.post("")
 async def stream_sessions(
     current_user: dict = Depends(get_current_user),
-    agent_service: AgentDomainService = Depends(get_agent_domain_service),
+    agent_service: AgentService = Depends(get_agent_service),
 ) -> EventSourceResponse:
     """流式获取会话列表（SSE）"""
 
     async def event_generator() -> AsyncGenerator[ServerSentEvent, None]:
         while True:
-            # TODO: 实现获取会话列表逻辑
-            session_items: List[ListSessionItem] = []
+            sessions = await agent_service.get_all_sessions(current_user.get("id"))
+            session_items = [
+                ListSessionItem(
+                    session_id=session.id,
+                    title=session.title,
+                    status=session.status,
+                    unread_message_count=session.unread_message_count,
+                    latest_message=session.latest_message,
+                    latest_message_at=int(session.latest_message_at.timestamp())
+                    if session.latest_message_at
+                    else None,
+                    is_shared=session.is_shared,
+                )
+                for session in sessions
+            ]
             yield ServerSentEvent(
                 event="sessions",
                 data=ListSessionResponse(sessions=session_items).model_dump_json(),
@@ -136,7 +172,7 @@ async def chat(
     session_id: str,
     request: ChatRequest,
     current_user: dict = Depends(get_current_user),
-    agent_service: AgentDomainService = Depends(get_agent_domain_service),
+    agent_service: AgentService = Depends(get_agent_service),
 ) -> EventSourceResponse:
     """聊天 SSE 流"""
 
@@ -146,7 +182,7 @@ async def chat(
             user_id=current_user.get("id"),
             message=request.message,
             timestamp=datetime.fromtimestamp(request.timestamp) if request.timestamp else None,
-            latest_event_id=request.event_id,
+            event_id=request.event_id,
             attachments=request.attachments,
         ):
             logger.debug(f"从聊天收到事件: {event}")
@@ -166,11 +202,13 @@ async def view_shell(
     session_id: str,
     request: ShellViewRequest,
     current_user: dict = Depends(get_current_user),
-    agent_service: AgentDomainService = Depends(get_agent_domain_service),
+    agent_service: AgentService = Depends(get_agent_service),
 ) -> APIResponse[ShellViewResponse]:
     """查看 Shell 会话输出"""
-    # TODO: 实现查看 Shell 逻辑
-    return APIResponse.success(ShellViewResponse(console=[]))
+    result = await agent_service.shell_view(
+        session_id, request.session_id, current_user.get("id")
+    )
+    return APIResponse.success(result)
 
 
 @router.post("/{session_id}/file")
@@ -178,11 +216,13 @@ async def view_file(
     session_id: str,
     request: FileViewRequest,
     current_user: dict = Depends(get_current_user),
-    agent_service: AgentDomainService = Depends(get_agent_domain_service),
+    agent_service: AgentService = Depends(get_agent_service),
 ) -> APIResponse[FileViewResponse]:
     """查看文件内容"""
-    # TODO: 实现查看文件逻辑
-    return APIResponse.success(FileViewResponse())
+    result = await agent_service.file_view(
+        session_id, request.file, current_user.get("id")
+    )
+    return APIResponse.success(result)
 
 
 @router.websocket("/{session_id}/vnc")
@@ -190,27 +230,20 @@ async def vnc_websocket(
     websocket: WebSocket,
     session_id: str,
     signature: str = Depends(verify_signature_websocket),
-    agent_service: AgentDomainService = Depends(get_agent_domain_service),
+    agent_service: AgentService = Depends(get_agent_service),
 ) -> None:
-    """VNC WebSocket 端点（二进制模式）
-
-    与沙箱环境中的 VNC WebSocket 服务建立连接并双向转发数据
-    支持通过签名 URL 进行认证，带有签名验证
-    """
+    """VNC WebSocket 端点（二进制模式）"""
 
     await websocket.accept(subprotocol="binary")
     logger.info(f"接受 WebSocket 连接，会话 {session_id}")
 
     try:
-        # TODO: 获取沙箱环境地址并验证用户
-        sandbox_ws_url = f"ws://localhost:5901"
+        sandbox_ws_url = await agent_service.get_vnc_url(session_id, None)
 
         logger.info(f"连接到 VNC WebSocket: {sandbox_ws_url}")
 
-        # 连接到沙箱 WebSocket
         async with websockets.connect(sandbox_ws_url) as sandbox_ws:
             logger.info(f"已连接到 VNC WebSocket: {sandbox_ws_url}")
-            # 创建两个任务来双向转发数据
 
             async def forward_to_sandbox():
                 try:
@@ -232,18 +265,15 @@ async def vnc_websocket(
                 except Exception as e:
                     logger.error(f"从沙箱转发数据出错: {e}")
 
-            # 并发运行两个转发任务
             forward_task1 = asyncio.create_task(forward_to_sandbox())
             forward_task2 = asyncio.create_task(forward_from_sandbox())
 
-            # 等待任一任务完成（意味着连接已关闭）
             done, pending = await asyncio.wait(
                 [forward_task1, forward_task2], return_when=asyncio.FIRST_COMPLETED
             )
 
             logger.info("WebSocket 连接关闭")
 
-            # 取消挂起的任务
             for task in pending:
                 task.cancel()
 
@@ -259,11 +289,22 @@ async def vnc_websocket(
 async def get_session_files(
     session_id: str,
     current_user: Optional[dict] = Depends(get_optional_current_user),
-    agent_service: AgentDomainService = Depends(get_agent_domain_service),
-) -> APIResponse[List[dict]]:
+    agent_service: AgentService = Depends(get_agent_service),
+    file_service: FileService = Depends(get_file_service),
+) -> APIResponse[List[FileInfo]]:
     """获取会话文件列表"""
-    # TODO: 实现获取会话文件列表逻辑
-    return APIResponse.success([])
+    if not current_user and not await agent_service.is_session_shared(session_id):
+        raise UnauthorizedError()
+
+    files = await agent_service.get_session_files(
+        session_id, current_user.get("id") if current_user else None
+    )
+
+    # 为每个文件添加 URL
+    for file in files:
+        await file_service.enrich_with_file_url(file)
+
+    return APIResponse.success(files)
 
 
 @router.post("/{session_id}/vnc/signed-url", response_model=APIResponse[SignedUrlResponse])
@@ -271,25 +312,27 @@ async def create_vnc_signed_url(
     session_id: str,
     request_data: AccessTokenRequest,
     current_user: dict = Depends(get_current_user),
-    agent_service: AgentDomainService = Depends(get_agent_domain_service),
+    agent_service: AgentService = Depends(get_agent_service),
 ) -> APIResponse[SignedUrlResponse]:
-    """为 VNC WebSocket 访问生成签名 URL
+    """为 VNC WebSocket 访问生成签名 URL"""
 
-    此端点创建一个签名 URL，允许临时访问特定会话的 VNC
-    WebSocket，无需认证头。
-    """
-
-    # 验证过期时间（最大 15 分钟）
     expire_minutes = request_data.expire_minutes
     if expire_minutes > 15:
         expire_minutes = 15
 
-    # TODO: 检查会话是否存在并属于用户
-    # TODO: 创建签名 URL
+    session = await agent_service.get_session(session_id, current_user.get("id"))
+    if not session:
+        raise NotFoundError("会话不存在")
 
-    signed_url = f"/api/v1/sessions/{session_id}/vnc?signature=temp_signature"
+    from manus_web_agent.application.services.token_service import TokenService
 
-    logger.info(f"为用户 {current_user.get('id')}，会话 {session_id} 创建 VNC 访问签名 URL")
+    token_service = TokenService()
+    ws_base_url = f"/api/v1/sessions/{session_id}/vnc"
+    signed_url = token_service.create_signed_url(ws_base_url, expire_minutes)
+
+    logger.info(
+        f"为用户 {current_user.get('id')}，会话 {session_id} 创建 VNC 签名 URL"
+    )
 
     return APIResponse.success(
         SignedUrlResponse(signed_url=signed_url, expires_in=expire_minutes * 60)
@@ -300,47 +343,57 @@ async def create_vnc_signed_url(
 async def share_session(
     session_id: str,
     current_user: dict = Depends(get_current_user),
-    agent_service: AgentDomainService = Depends(get_agent_domain_service),
+    agent_service: AgentService = Depends(get_agent_service),
 ) -> APIResponse[ShareSessionResponse]:
-    """分享会话，使其可公开访问"""
-    # TODO: 实现分享会话逻辑
-    return APIResponse.success(ShareSessionResponse(session_id=session_id, is_shared=True))
+    """分享会话"""
+    await agent_service.share_session(session_id, current_user.get("id"))
+    return APIResponse.success(
+        ShareSessionResponse(session_id=session_id, is_shared=True)
+    )
 
 
 @router.get("/{session_id}/share/files")
 async def get_shared_session_files(
     session_id: str,
-    agent_service: AgentDomainService = Depends(get_agent_domain_service),
-) -> APIResponse[List[dict]]:
+    agent_service: AgentService = Depends(get_agent_service),
+    file_service: FileService = Depends(get_file_service),
+) -> APIResponse[List[FileInfo]]:
     """获取共享会话的文件"""
-    # TODO: 实现获取共享会话文件逻辑
-    return APIResponse.success([])
+    files = await agent_service.get_shared_session_files(session_id)
+    for file in files:
+        await file_service.enrich_with_file_url(file)
+    return APIResponse.success(files)
 
 
 @router.delete("/{session_id}/share", response_model=APIResponse[ShareSessionResponse])
 async def unshare_session(
     session_id: str,
     current_user: dict = Depends(get_current_user),
-    agent_service: AgentDomainService = Depends(get_agent_domain_service),
+    agent_service: AgentService = Depends(get_agent_service),
 ) -> APIResponse[ShareSessionResponse]:
-    """取消分享会话，使其变为私有"""
-    # TODO: 实现取消分享会话逻辑
-    return APIResponse.success(ShareSessionResponse(session_id=session_id, is_shared=False))
+    """取消分享会话"""
+    await agent_service.unshare_session(session_id, current_user.get("id"))
+    return APIResponse.success(
+        ShareSessionResponse(session_id=session_id, is_shared=False)
+    )
 
 
 @router.get("/shared/{session_id}", response_model=APIResponse[SharedSessionResponse])
 async def get_shared_session(
     session_id: str,
-    agent_service: AgentDomainService = Depends(get_agent_domain_service),
+    agent_service: AgentService = Depends(get_agent_service),
 ) -> APIResponse[SharedSessionResponse]:
     """无需认证获取共享会话"""
-    # TODO: 实现获取共享会话逻辑
+    session = await agent_service.get_shared_session(session_id)
+    if not session:
+        raise NotFoundError("共享会话不存在")
+
     return APIResponse.success(
         SharedSessionResponse(
-            session_id=session_id,
-            title="Shared Session",
-            status="completed",
-            events=[],
-            is_shared=True,
+            session_id=session.id,
+            title=session.title,
+            status=session.status,
+            events=await EventMapper.events_to_sse_events(session.events),
+            is_shared=session.is_shared,
         )
     )

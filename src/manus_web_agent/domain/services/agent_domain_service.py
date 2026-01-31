@@ -98,6 +98,71 @@ class AgentDomainService:
             return None
         return self._task_cls.get(task_id)
 
+    async def create_session(self, user_id: str) -> Session:
+        """创建会话
+
+        :param user_id: 用户 ID
+        :return: 会话对象
+        """
+        # 创建或获取用户对应的 agent
+        agent = await self._agent_repository.find_by_user_id(user_id)
+        if not agent:
+            from manus_web_agent.domain.models.agent import Agent
+            agent = Agent(user_id=user_id)
+            await self._agent_repository.save(agent)
+            logger.info(f"为用户 {user_id} 创建新 Agent")
+
+        # 创建会话
+        session = Session(agent_id=agent.id, user_id=user_id)
+        await self._session_repository.save(session)
+        logger.info(f"创建会话 {session.id}，用户 {user_id}")
+
+        return session
+
+    async def get_session(self, session_id: str, user_id: str) -> Optional[Session]:
+        """获取会话
+
+        :param session_id: 会话 ID
+        :param user_id: 用户 ID
+        :return: 会话对象
+        """
+        return await self._session_repository.find_by_id_and_user_id(session_id, user_id)
+
+    async def get_session_by_id(self, session_id: str) -> Optional[Session]:
+        """通过 ID 获取会话（不带用户验证）
+
+        :param session_id: 会话 ID
+        :return: 会话对象
+        """
+        return await self._session_repository.find_by_id(session_id)
+
+    async def get_all_sessions(self, user_id: str) -> List[Session]:
+        """获取用户的所有会话
+
+        :param user_id: 用户 ID
+        :return: 会话列表
+        """
+        return await self._session_repository.find_by_user_id(user_id)
+
+    async def delete_session(self, session_id: str, user_id: str) -> bool:
+        """删除会话
+
+        :param session_id: 会话 ID
+        :param user_id: 用户 ID
+        :return: 是否成功
+        """
+        session = await self.get_session(session_id, user_id)
+        if not session:
+            return False
+
+        # 停止任务
+        await self.stop_session(session_id)
+
+        # 删除会话
+        await self._session_repository.delete(session_id)
+        logger.info(f"删除会话 {session_id}")
+        return True
+
     async def stop_session(self, session_id: str) -> None:
         """停止会话"""
         session = await self._session_repository.find_by_id(session_id)
@@ -108,6 +173,105 @@ class AgentDomainService:
         if task:
             task.cancel()
         await self._session_repository.update_status(session_id, SessionStatus.COMPLETED)
+
+    async def shell_view(self, session_id: str, shell_session_id: str) -> dict:
+        """查看 Shell 输出
+
+        :param session_id: 会话 ID
+        :param shell_session_id: Shell 会话 ID
+        :return: Shell 输出
+        """
+        session = await self._session_repository.find_by_id(session_id)
+        if not session:
+            raise RuntimeError("会话不存在")
+
+        if not session.sandbox_id:
+            return {"console": []}
+
+        sandbox = await self._sandbox_cls.get(session.sandbox_id)
+        if not sandbox:
+            return {"console": []}
+
+        result = await sandbox.view_shell(shell_session_id, console=True)
+        if result.success and result.data:
+            return {"console": result.data.get("console", [])}
+        return {"console": []}
+
+    async def file_view(self, session_id: str, file_path: str) -> dict:
+        """查看文件内容
+
+        :param session_id: 会话 ID
+        :param file_path: 文件路径
+        :return: 文件内容和信息
+        """
+        session = await self._session_repository.find_by_id(session_id)
+        if not session:
+            raise RuntimeError("会话不存在")
+
+        if not session.sandbox_id:
+            return {"content": None, "file": None}
+
+        sandbox = await self._sandbox_cls.get(session.sandbox_id)
+        if not sandbox:
+            return {"content": None, "file": None}
+
+        # 读取文件内容
+        result = await sandbox.file_read(file_path)
+        content = result.data.get("content") if result.success else None
+
+        # 获取文件信息
+        file_info = await self._session_repository.get_file_by_path(session_id, file_path)
+
+        return {"content": content, "file": file_info}
+
+    async def get_vnc_url(self, session_id: str) -> str:
+        """获取 VNC URL
+
+        :param session_id: 会话 ID
+        :return: VNC WebSocket URL
+        """
+        session = await self._session_repository.find_by_id(session_id)
+        if not session:
+            raise RuntimeError("会话不存在")
+
+        if not session.sandbox_id:
+            raise RuntimeError("沙箱不存在")
+
+        sandbox = await self._sandbox_cls.get(session.sandbox_id)
+        if not sandbox:
+            raise RuntimeError("沙箱不存在")
+
+        return sandbox.vnc_url
+
+    async def share_session(self, session_id: str) -> bool:
+        """分享会话
+
+        :param session_id: 会话 ID
+        :return: 是否成功
+        """
+        await self._session_repository.update_shared_status(session_id, True)
+        logger.info(f"分享会话 {session_id}")
+        return True
+
+    async def unshare_session(self, session_id: str) -> bool:
+        """取消分享会话
+
+        :param session_id: 会话 ID
+        :return: 是否成功
+        """
+        await self._session_repository.update_shared_status(session_id, False)
+        logger.info(f"取消分享会话 {session_id}")
+        return True
+
+    async def clear_unread_message_count(self, session_id: str, user_id: str) -> bool:
+        """清除未读消息计数
+
+        :param session_id: 会话 ID
+        :param user_id: 用户 ID
+        :return: 是否成功
+        """
+        await self._session_repository.update_unread_message_count(session_id, 0)
+        return True
 
     async def chat(
             self,

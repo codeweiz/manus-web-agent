@@ -13,6 +13,10 @@ class SearchResultItem(BaseModel):
     snippet: str = Field(..., description="摘要")
 
 
+# 别名，保持向后兼容
+SearchResult = SearchResultItem
+
+
 class SearchResults(BaseModel):
     """搜索结果"""
 

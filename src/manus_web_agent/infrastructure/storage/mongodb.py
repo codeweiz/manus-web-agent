@@ -1,6 +1,7 @@
 from functools import lru_cache
-from typing import Optional
+from typing import Optional, List, Type
 
+from beanie import Document, init_beanie
 from motor.motor_asyncio import AsyncIOMotorClient
 from pymongo.errors import ConnectionFailure
 
@@ -16,9 +17,14 @@ class MongoDB:
     def __init__(self):
         self._client: Optional[AsyncIOMotorClient] = None
         self._config = TOML_CONFIG.mongodb_config
+        self._document_models: List[Type[Document]] = []
+
+    def register_models(self, models: List[Type[Document]]) -> None:
+        """注册 Beanie 文档模型"""
+        self._document_models.extend(models)
 
     async def initialize(self) -> None:
-        """初始化 MongoDB 连接"""
+        """初始化 MongoDB 连接和 Beanie ODM"""
         if self._client is not None:
             return
 
@@ -38,6 +44,15 @@ class MongoDB:
             # 验证连接
             await self._client.admin.command('ping')
             logger.info("成功连接到 MongoDB")
+
+            # 初始化 Beanie
+            if self._document_models:
+                await init_beanie(
+                    database=self.client[self._config.database],
+                    document_models=self._document_models
+                )
+                logger.info(f"初始化 Beanie ODM，文档模型: {[m.__name__ for m in self._document_models]}")
+
         except ConnectionFailure as e:
             logger.error(f"连接 MongoDB 失败: {str(e)}")
             raise

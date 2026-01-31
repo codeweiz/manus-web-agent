@@ -6,11 +6,33 @@ from fastapi import Depends, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from starlette.websockets import WebSocket
 
+from manus_web_agent.application.services.agent_service import AgentService
+from manus_web_agent.application.services.auth_service import AuthService
+from manus_web_agent.application.services.email_service import EmailService
+from manus_web_agent.application.services.file_service import FileService
+from manus_web_agent.application.services.token_service import TokenService
+from manus_web_agent.core.toml_config import TOML_CONFIG
+from manus_web_agent.domain.models.user import User, UserRole
 from manus_web_agent.domain.services.agent_domain_service import AgentDomainService
+from manus_web_agent.infrastructure.external.cache import get_cache
+from manus_web_agent.infrastructure.external.file import get_file_storage
 from manus_web_agent.infrastructure.external.llm.openai_llm import OpenAILLM
 from manus_web_agent.infrastructure.external.sandbox.docker_sandbox import DockerSandbox
-from manus_web_agent.infrastructure.storage.mongodb import get_mongodb
-from manus_web_agent.infrastructure.storage.redis import get_redis
+from manus_web_agent.infrastructure.external.search import get_search_engine
+from manus_web_agent.infrastructure.external.task.redis_task import RedisStreamTask
+from manus_web_agent.infrastructure.repositories.file_mcp_repository import (
+    FileMCPRepository,
+)
+from manus_web_agent.infrastructure.repositories.mongo_agent_repository import (
+    MongoAgentRepository,
+)
+from manus_web_agent.infrastructure.repositories.mongo_session_repository import (
+    MongoSessionRepository,
+)
+from manus_web_agent.infrastructure.repositories.user_repository import (
+    MongoUserRepository,
+)
+from manus_web_agent.infrastructure.utils.llm_json_parser import LLMJsonParser
 
 logger = logging.getLogger(__name__)
 
@@ -19,24 +41,61 @@ security_bearer = HTTPBearer(auto_error=False)
 
 
 @lru_cache()
+def get_token_service() -> TokenService:
+    """获取 TokenService 实例"""
+    return TokenService()
+
+
+@lru_cache()
+def get_email_service() -> Optional[EmailService]:
+    """获取 EmailService 实例"""
+    try:
+        cache = get_cache()
+        return EmailService(cache=cache)
+    except Exception as e:
+        logger.warning(f"邮件服务初始化失败: {e}")
+        return None
+
+
+@lru_cache()
+def get_auth_service() -> AuthService:
+    """
+    获取 AuthService 实例
+
+    使用 lru_cache 实现单例模式
+    """
+    logger.info("创建 AuthService 实例")
+
+    user_repository = MongoUserRepository()
+    token_service = get_token_service()
+    email_service = get_email_service()
+
+    return AuthService(
+        user_repository=user_repository,
+        token_service=token_service,
+        email_service=email_service,
+    )
+
+
+@lru_cache()
 def get_agent_domain_service() -> AgentDomainService:
     """
     获取 AgentDomainService 实例及所有必需的依赖
 
-    此函数创建并返回带有所有必要依赖的 AgentDomainService 实例。
-    使用 lru_cache 实现单例模式。
+    使用 lru_cache 实现单例模式
     """
     logger.info("创建 AgentDomainService 实例")
 
     # 创建所有依赖
     llm = OpenAILLM()
-    agent_repository = None  # TODO: 实现 MongoAgentRepository
-    session_repository = None  # TODO: 实现 MongoSessionRepository
+    agent_repository = MongoAgentRepository()
+    session_repository = MongoSessionRepository()
     sandbox_cls = DockerSandbox
-    task_cls = None  # TODO: 实现 RedisStreamTask
-    json_parser = None  # TODO: 实现 LLMJsonParser
-    file_storage = None  # TODO: 实现 GridFSFileStorage
-    mcp_repository = None  # TODO: 实现 FileMCPRepository
+    task_cls = RedisStreamTask
+    json_parser = LLMJsonParser(llm=llm)
+    file_storage = get_file_storage()
+    mcp_repository = FileMCPRepository()
+    search_engine = get_search_engine()
 
     # 创建 AgentDomainService 实例
     return AgentDomainService(
@@ -48,52 +107,134 @@ def get_agent_domain_service() -> AgentDomainService:
         json_parser=json_parser,
         file_storage=file_storage,
         mcp_repository=mcp_repository,
+        search_engine=search_engine,
+    )
+
+
+@lru_cache()
+def get_agent_service() -> AgentService:
+    """获取 AgentService 实例"""
+    logger.info("创建 AgentService 实例")
+
+    agent_domain_service = get_agent_domain_service()
+    token_service = get_token_service()
+
+    return AgentService(
+        agent_domain_service=agent_domain_service,
+        token_service=token_service,
+    )
+
+
+@lru_cache()
+def get_file_service() -> FileService:
+    """获取 FileService 实例"""
+    logger.info("创建 FileService 实例")
+
+    file_storage = get_file_storage()
+    token_service = get_token_service()
+
+    return FileService(
+        file_storage=file_storage,
+        token_service=token_service,
     )
 
 
 async def get_current_user(
     bearer_credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_bearer),
+    auth_service: AuthService = Depends(get_auth_service),
 ) -> dict:
     """
     获取当前认证用户（必需）
 
-    此依赖使用 Bearer Token 强制执行认证。
-    如果认证失败，则抛出 HTTPException。
+    此依赖使用 Bearer Token 强制执行认证
     """
-    # 如果没有提供 bearer token，返回匿名用户
+    # 获取认证提供者配置
+    auth_provider = getattr(TOML_CONFIG, "auth_provider", "none")
+
+    # 如果 auth_provider 是 'none'，返回匿名用户
+    if auth_provider == "none":
+        return {
+            "id": "anonymous",
+            "fullname": "anonymous",
+            "email": "anonymous@localhost",
+            "role": UserRole.USER.value,
+        }
+
+    # 检查是否提供了 bearer token
     if not bearer_credentials:
-        return {"id": "anonymous", "fullname": "anonymous", "email": "anonymous@localhost"}
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="需要认证",
+        )
 
     try:
-        # TODO: 实现 token 验证
-        # 这里简化处理，实际应该验证 JWT token
-        return {"id": "user_id", "fullname": "User", "email": "user@example.com"}
+        # 验证 bearer token
+        user = await auth_service.verify_token(bearer_credentials.credentials)
+
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="无效令牌",
+            )
+
+        if not user.is_active:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="账户已停用",
+            )
+
+        return {
+            "id": user.id,
+            "fullname": user.fullname,
+            "email": user.email,
+            "role": user.role.value,
+        }
+
     except Exception as e:
         logger.warning(f"认证失败: {e}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="认证失败"
+            detail="认证失败",
         )
 
 
 async def get_optional_current_user(
     bearer_credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_bearer),
+    auth_service: AuthService = Depends(get_auth_service),
 ) -> Optional[dict]:
     """
     获取当前认证用户（可选）
 
-    此依赖允许认证和匿名访问。
-    如果认证失败或未提供，则返回 None。
-
-    使用 Bearer Token 认证。
+    此依赖允许认证和匿名访问
     """
+    # 获取认证提供者配置
+    auth_provider = getattr(TOML_CONFIG, "auth_provider", "none")
+
+    # 如果 auth_provider 是 'none'，返回匿名用户
+    if auth_provider == "none":
+        return {
+            "id": "anonymous",
+            "fullname": "anonymous",
+            "email": "anonymous@localhost",
+            "role": UserRole.USER.value,
+        }
+
     # 如果没有提供 bearer token，返回 None
     if not bearer_credentials:
         return None
 
     try:
-        # TODO: 实现 token 验证
-        return {"id": "user_id", "fullname": "User", "email": "user@example.com"}
+        # 尝试验证 bearer token
+        user = await auth_service.verify_token(bearer_credentials.credentials)
+
+        if user and user.is_active:
+            return {
+                "id": user.id,
+                "fullname": user.fullname,
+                "email": user.email,
+                "role": user.role.value,
+            }
+
     except Exception as e:
         logger.warning(f"可选认证失败: {e}")
 
@@ -104,36 +245,22 @@ async def verify_signature(
     request: Request,
     signature: Optional[str] = Query(None),
 ) -> str:
-    """
-    验证签名 URL 访问的签名
+    """验证签名 URL 访问的签名"""
+    token_service = get_token_service()
 
-    此依赖验证请求 URL 中的签名参数。
-    如果签名缺失或无效，则抛出 HTTPException。
-
-    设计用于普通 HTTP 端点和 WebSocket 端点。
-    对于 WebSocket 连接，异常将在连接建立之前抛出，
-    防止无效连接被建立。
-
-    :param request: 传入的请求
-    :param signature: 签名查询参数
-    :return: 验证通过的签名字符串
-
-    :raises HTTPException: 如果签名缺失或无效（状态码 401）
-    """
     if not signature:
         logger.error(f"缺少签名: {request.url}")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="缺少签名"
+            detail="缺少签名",
         )
 
-    # TODO: 实现签名验证逻辑
-    # if not token_service.verify_signed_url(str(request.url)):
-    #     logger.error(f"无效签名: {request.url}")
-    #     raise HTTPException(
-    #         status_code=status.HTTP_401_UNAUTHORIZED,
-    #         detail="无效签名"
-    #     )
+    if not token_service.verify_signed_url(str(request.url)):
+        logger.error(f"无效签名: {request.url}")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="无效签名",
+        )
 
     return signature
 
@@ -147,6 +274,6 @@ async def verify_signature_websocket(
         logger.error(f"WebSocket 缺少签名")
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="缺少签名"
+            detail="缺少签名",
         )
     return signature

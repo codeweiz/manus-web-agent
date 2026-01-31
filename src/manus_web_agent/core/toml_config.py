@@ -108,21 +108,30 @@ class TomlConfig(BaseModel):
     langsmith_config: LangSmithConfig = Field(default_factory=LangSmithConfig, description="LangSmith 追踪配置")
 
 
-def load_toml_config(file_path: str = "../../.config.toml") -> TomlConfig:
+def load_toml_config(file_path: str = ".config.toml") -> TomlConfig:
     """加载 .config.toml 的配置"""
 
     import tomllib
     from pathlib import Path
 
-    path = Path(file_path)
-    if not path.exists():
-        raise FileNotFoundError
+    # 尝试多个路径
+    paths_to_try = [
+        Path(file_path),
+        Path(".config.toml"),
+        Path.home() / ".config/manus-web-agent/config.toml",
+    ]
 
-    try:
-        with open(str(path), "rb") as f:
-            toml_data = tomllib.load(f)
-    except tomllib.TOMLDecodeError as e:
-        raise e
+    toml_data = {}
+    for path in paths_to_try:
+        if path.exists():
+            try:
+                with open(str(path), "rb") as f:
+                    toml_data = tomllib.load(f)
+                break
+            except tomllib.TOMLDecodeError as e:
+                raise e
+            except Exception:
+                continue
 
     return TomlConfig(
         llm_config=LlmConfig(**toml_data.get("llm") if toml_data.get("llm") else {}),
