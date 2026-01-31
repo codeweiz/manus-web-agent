@@ -55,6 +55,16 @@ def mock_runner():
     return MockTaskRunner()
 
 
+@pytest.fixture(autouse=True)
+async def init_redis():
+    """自动初始化 Redis"""
+    from manus_web_agent.infrastructure.storage.redis import get_redis
+    redis_client = get_redis()
+    await redis_client.initialize()
+    yield
+    await redis_client.shutdown()
+
+
 @pytest.mark.asyncio
 class TestRedisStreamTask:
     """Redis Stream 任务测试"""

@@ -70,15 +70,16 @@ class BaiduSearchEngine(SearchEngine):
                 )
                 snippet = snippet_elem.get_text(strip=True) if snippet_elem else ""
 
-                results.append(
-                    SearchResult(title=title, url=url, snippet=snippet)
-                )
+                if url:  # 只添加有链接的结果
+                    results.append(
+                        SearchResult(title=title, link=url, snippet=snippet)
+                    )
 
                 if len(results) >= num_results:
                     break
 
-            return SearchResults(results=results, query=query)
+            return SearchResults(results=results, query=query, data_range=None)
 
         except Exception as e:
             logger.error(f"Baidu 搜索错误: {e}")
-            return SearchResults(results=[], query=query, error=str(e))
+            return SearchResults(results=[], query=query, data_range=None, error=str(e))

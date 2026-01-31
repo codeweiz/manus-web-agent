@@ -1,0 +1,41 @@
+# Core dependencies
+fastapi>=0.128.0
+uvicorn>=0.40.0
+pydantic>=2.12.5
+pydantic-settings>=2.12.0
+
+# LLM and AI
+openai>=2.15.0
+
+# Database
+motor>=3.7.1
+pymongo>=4.16.0
+beanie>=2.0.1
+redis>=7.1.0
+
+# Web and HTTP
+httpx>=0.28.1
+websockets>=16.0
+sse-starlette>=3.2.0
+python-multipart>=0.0.21
+
+# Browser automation
+playwright>=1.57.0
+markdownify>=1.2.2
+beautifulsoup4>=4.14.3
+
+# Docker and sandbox
+docker>=7.1.0
+
+# Authentication and security
+pyjwt>=2.10.1
+cryptography>=46.0.3
+
+# Utilities
+python-dotenv>=1.2.1
+rich>=14.2.0
+async-lru>=2.1.0
+tomli>=2.4.0
+
+# MCP
+mcp>=1.25.0

@@ -6,10 +6,12 @@ from typing import Optional, Tuple
 
 import gridfs
 from bson import ObjectId
+from pymongo import MongoClient
 
 from manus_web_agent.domain.external.file import FileStorage
 from manus_web_agent.domain.models.file import FileInfo
 from manus_web_agent.infrastructure.storage.mongodb import get_mongodb
+from manus_web_agent.core.toml_config import TOML_CONFIG
 
 logger = logging.getLogger(__name__)
 
@@ -19,10 +21,19 @@ class GridFSFileStorage(FileStorage):
 
     def __init__(self):
         self._mongodb = get_mongodb()
+        self._sync_client: Optional[MongoClient] = None
+
+    def _get_sync_database(self):
+        """获取同步数据库实例"""
+        if self._sync_client is None:
+            config = TOML_CONFIG.mongodb_config
+            uri = config.uri
+            self._sync_client = MongoClient(uri)
+        return self._sync_client[self._mongodb._config.database]
 
     def _get_fs(self):
         """获取 GridFS 实例"""
-        return gridfs.GridFS(self._mongodb.database)
+        return gridfs.GridFS(self._get_sync_database())
 
     async def upload_file(
         self,

@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  # Main application
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - PYTHONPATH=/app/src
+      - HOST=0.0.0.0
+      - PORT=8000
+      - RELOAD=false
+    volumes:
+      - ./src:/app/src
+      - ./.config.toml:/app/.config.toml
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - manus-network
+    command: python -m manus_web_agent.main
+
+  # MongoDB
+  mongodb:
+    image: mongo:7.0
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+    environment:
+      - MONGO_INITDB_DATABASE=manus_web_agent
+    networks:
+      - manus-network
+    healthcheck:
+      test: echo 'db.runCommand("ping").ok' | mongosh localhost:27017/test --quiet
+      interval: 10s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - manus-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Optional: Sandbox environment (if needed locally)
+  sandbox:
+    image: browserless/chrome:latest
+    ports:
+      - "3000:3000"
+      - "9222:9222"
+    environment:
+      - CONNECTION_TIMEOUT=600000
+      - MAX_CONCURRENT_SESSIONS=10
+      - MAX_QUEUE_LENGTH=10
+      - PREBOOT_CHROME=true
+      - KEEP_ALIVE=true
+      - ENABLE_CORS=true
+      - ENABLE_XVFB=true
+    networks:
+      - manus-network
+    profiles:
+      - sandbox
+
+volumes:
+  mongodb_data:
+  redis_data:
+
+networks:
+  manus-network:
+    driver: bridge

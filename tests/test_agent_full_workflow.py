@@ -51,7 +51,7 @@ from manus_web_agent.infrastructure.storage.mongodb import MongoDB
 TEST_USER_ID = f"test_user_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
 
-@pytest.fixture(scope="module")
+@pytest.fixture
 async def initialized_infrastructure():
     """初始化基础设施"""
     print("\n" + "="*60)
@@ -66,6 +66,9 @@ async def initialized_infrastructure():
 
     # 验证 Redis
     try:
+        from manus_web_agent.infrastructure.storage.redis import get_redis
+        redis_client = get_redis()
+        await redis_client.initialize()
         cache = RedisCache()
         await cache.set("test:connection", "ok", 10)
         result = await cache.get("test:connection")

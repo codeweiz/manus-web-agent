@@ -28,10 +28,15 @@ def test_stream_key():
 @pytest.fixture
 async def message_queue(test_stream_key):
     """提供 RedisStreamQueue 实例"""
+    from manus_web_agent.infrastructure.storage.redis import get_redis
+    redis_client = get_redis()
+    await redis_client.initialize()
+
     queue = RedisStreamQueue(test_stream_key)
     yield queue
     # 清理
     await queue.clear()
+    await redis_client.shutdown()
 
 
 @pytest.mark.asyncio
@@ -77,8 +82,13 @@ class TestRedisStreamQueue:
 
     async def test_empty_queue(self, message_queue):
         """测试空队列"""
-        # 非阻塞获取
-        msg_id, msg = await message_queue.get(block_ms=0)
+        # 先清空队列
+        await message_queue.clear()
+        # 重置 last_id 以确保从头读取
+        message_queue._last_id = "0"
+
+        # 非阻塞获取 - 使用短暂超时
+        msg_id, msg = await message_queue.get(block_ms=100)
         assert msg_id is None, "空队列应该返回 None"
         assert msg is None, "空队列消息应该为 None"
 
@@ -193,6 +203,10 @@ class TestRedisStreamQueueMultipleStreams:
 
     async def test_multiple_streams_isolation(self):
         """测试多个流之间的隔离性"""
+        from manus_web_agent.infrastructure.storage.redis import get_redis
+        redis_client = get_redis()
+        await redis_client.initialize()
+
         stream_key1 = f"test:stream:isolation1:{uuid.uuid4().hex[:8]}"
         stream_key2 = f"test:stream:isolation2:{uuid.uuid4().hex[:8]}"
 
@@ -222,6 +236,7 @@ class TestRedisStreamQueueMultipleStreams:
         finally:
             await queue1.clear()
             await queue2.clear()
+            await redis_client.shutdown()
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ class Agent(BaseModel):
     """Agent 聚合根，管理 AI Agent 整个生命周期和状态，包括执行上下文、记忆、当前计划"""
 
     id: str = Field(default_factory=lambda: uuid.uuid4().hex[:16], description="Agent ID")
+    user_id: str = Field(default="", description="用户 ID")
     memories: Dict[str, Memory] = Field(default_factory=dict, description="记忆")
     model_name: str = Field(default="", description="模型名")
     temperature: float = Field(default=0.7, description="温度")

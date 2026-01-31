@@ -60,16 +60,18 @@ class GoogleSearchEngine(SearchEngine):
 
             results = []
             for item in data.get("items", []):
-                results.append(
-                    SearchResult(
-                        title=item.get("title", ""),
-                        url=item.get("link", ""),
-                        snippet=item.get("snippet", ""),
+                link = item.get("link", "")
+                if link:  # 只添加有链接的结果
+                    results.append(
+                        SearchResult(
+                            title=item.get("title", ""),
+                            link=link,
+                            snippet=item.get("snippet", ""),
+                        )
                     )
-                )
 
-            return SearchResults(results=results, query=query)
+            return SearchResults(results=results, query=query, data_range=None)
 
         except Exception as e:
             logger.error(f"Google 搜索错误: {e}")
-            return SearchResults(results=[], query=query, error=str(e))
+            return SearchResults(results=[], query=query, data_range=None, error=str(e))

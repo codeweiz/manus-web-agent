@@ -16,6 +16,18 @@ logger = logging.getLogger(__name__)
 class MongoSessionRepository(SessionRepository):
     """Session MongoDB 仓库"""
 
+    async def create_session(self, user_id: str, agent_id: str, title: Optional[str] = None) -> Session:
+        """创建新 Session"""
+        session = Session(
+            user_id=user_id,
+            agent_id=agent_id,
+            title=title or "新会话",
+            status=SessionStatus.PENDING
+        )
+        await self.save(session)
+        logger.info(f"创建 Session {session.id}")
+        return session
+
     async def save(self, session: Session) -> None:
         """保存或更新 Session"""
         doc = await SessionDocument.find_one(SessionDocument.session_id == session.id)

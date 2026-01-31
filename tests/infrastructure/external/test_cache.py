@@ -19,14 +19,22 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "..", ".."))
 import pytest
 
 from manus_web_agent.infrastructure.external.cache.redis_cache import RedisCache
-from manus_web_agent.infrastructure.storage.redis import RedisStorage
+from manus_web_agent.infrastructure.storage.redis import RedisClient
 
 
-@pytest.fixture(scope="module")
-def redis_cache():
+@pytest.fixture
+async def redis_cache():
     """提供 RedisCache 实例"""
+    # 先初始化 Redis 客户端 - 使用 get_redis 获取单例并初始化
+    from manus_web_agent.infrastructure.storage.redis import get_redis
+    redis_client = get_redis()
+    await redis_client.initialize()
+
     cache = RedisCache()
-    return cache
+    yield cache
+
+    # 清理
+    await redis_client.shutdown()
 
 
 @pytest.fixture(scope="function")
@@ -186,14 +194,14 @@ class TestRedisStorage:
 
     async def test_connection(self):
         """测试 Redis 连接"""
-        storage = RedisStorage()
+        storage = RedisClient()
 
         try:
             await storage.initialize()
             assert storage._client is not None, "客户端应该已初始化"
 
             # 测试 ping
-            result = await storage.ping()
+            result = await storage._client.ping()
             assert result is True, "Ping 应该成功"
 
             print("✓ Redis 连接测试通过")
@@ -202,7 +210,7 @@ class TestRedisStorage:
 
     async def test_pubsub(self):
         """测试发布订阅功能"""
-        storage = RedisStorage()
+        storage = RedisClient()
 
         try:
             await storage.initialize()
@@ -212,25 +220,32 @@ class TestRedisStorage:
             test_message = f"Hello Redis! {uuid.uuid4().hex}"
 
             # 订阅
-            pubsub = await storage.subscribe(channel)
+            pubsub = storage.client.pubsub()
+            await pubsub.subscribe(channel)
             assert pubsub is not None, "订阅应该成功"
 
+            # 等待订阅建立并消费订阅消息
+            await asyncio.sleep(0.1)
+            await pubsub.get_message(ignore_subscribe_messages=True, timeout=1)
+
             # 发布消息
-            await asyncio.sleep(0.1)  # 等待订阅建立
-            result = await storage.publish(channel, test_message)
+            result = await storage.client.publish(channel, test_message)
             assert result >= 0, "发布应该成功"
 
-            # 接收消息
-            message = await asyncio.wait_for(
-                pubsub.get_message(ignore_subscribe_messages=True, timeout=2),
-                timeout=3
-            )
+            # 接收消息 - 使用循环等待消息
+            message = None
+            for _ in range(50):  # 最多等待5秒
+                message = await pubsub.get_message(ignore_subscribe_messages=True, timeout=0.1)
+                if message is not None:
+                    break
+                await asyncio.sleep(0.1)
 
             assert message is not None, "应该收到消息"
             assert message["data"] == test_message, f"消息内容不匹配: {message}"
 
             # 取消订阅
-            await storage.unsubscribe(channel, pubsub)
+            await pubsub.unsubscribe(channel)
+            await pubsub.close()
 
             print(f"✓ Pub/Sub 测试通过: {channel}")
         finally:
