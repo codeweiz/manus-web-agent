@@ -94,8 +94,7 @@ class PlanActFlow(BaseFlow):
         logger.debug(f"为 Agent {self._agent_id} 创建执行代理")
 
     async def run(self, message: Message) -> AsyncGenerator[BaseEvent, None]:
-
-        # TODO: move to task runner
+        # 获取会话并检查状态，根据状态决定执行流程
         session = await self._session_repository.find_by_id(self._session_id)
         if not session:
             raise ValueError(f"会话 {self._session_id} 不存在")

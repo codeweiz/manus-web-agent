@@ -2,7 +2,7 @@
 
 import logging
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 
 from manus_web_agent.application.errors.exceptions import (
     NotFoundError,
@@ -183,10 +183,16 @@ async def refresh_token(
 
 @router.post("/logout", response_model=APIResponse[None])
 async def logout(
+    request: Request,
     current_user: dict = Depends(get_current_user),
+    auth_service: AuthService = Depends(get_auth_service),
 ) -> APIResponse[None]:
     """用户登出"""
-    # TODO: 将令牌加入黑名单
+    # 从请求头获取令牌
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+        await auth_service.logout(token)
     return APIResponse.success(msg="登出成功")
 
 

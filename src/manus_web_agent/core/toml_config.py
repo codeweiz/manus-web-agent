@@ -90,6 +90,18 @@ class LangSmithConfig(BaseModel):
     api_key: str = Field(default="", description="API KEY")
 
 
+class JwtConfig(BaseModel):
+    """JWT 配置"""
+
+    secret_key: str = Field(default="", description="密钥（为空则随机生成）")
+
+    algorithm: str = Field(default="HS256", description="算法")
+
+    access_token_expire_minutes: int = Field(default=60, description="访问令牌过期时间（分钟）")
+
+    refresh_token_expire_days: int = Field(default=7, description="刷新令牌过期时间（天）")
+
+
 class TomlConfig(BaseModel):
     """Toml 配置"""
 
@@ -106,6 +118,8 @@ class TomlConfig(BaseModel):
     mcp_config: McpConfig = Field(default_factory=McpConfig, description="MCP 配置")
 
     langsmith_config: LangSmithConfig = Field(default_factory=LangSmithConfig, description="LangSmith 追踪配置")
+
+    jwt_config: JwtConfig = Field(default_factory=JwtConfig, description="JWT 配置")
 
 
 def load_toml_config(file_path: str = ".config.toml") -> TomlConfig:
@@ -141,6 +155,7 @@ def load_toml_config(file_path: str = ".config.toml") -> TomlConfig:
         search_config=SearchConfig(**toml_data.get("search") if toml_data.get("search") else {}),
         mcp_config=McpConfig(**toml_data.get("mcp") if toml_data.get("mcp") else {}),
         langsmith_config=LangSmithConfig(**toml_data.get("langsmith") if toml_data.get("langsmith") else {}),
+        jwt_config=JwtConfig(**toml_data.get("jwt") if toml_data.get("jwt") else {}),
     )
 
 

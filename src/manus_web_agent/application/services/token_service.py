@@ -12,16 +12,19 @@ from fastapi import HTTPException, status
 
 from manus_web_agent.core.toml_config import TOML_CONFIG
 
+# Token 黑名单（内存存储，生产环境应使用 Redis）
+_token_blacklist: set = set()
+
 
 class TokenService:
     """Token 服务，处理 JWT 令牌和签名 URL"""
 
     def __init__(self):
-        # TODO: 从配置读取
-        self.secret_key = getattr(TOML_CONFIG, 'jwt_secret_key', secrets.token_hex(32))
-        self.algorithm = getattr(TOML_CONFIG, 'jwt_algorithm', 'HS256')
-        self.access_token_expire_minutes = getattr(TOML_CONFIG, 'jwt_access_token_expire_minutes', 60)
-        self.refresh_token_expire_days = getattr(TOML_CONFIG, 'jwt_refresh_token_expire_days', 7)
+        jwt_config = TOML_CONFIG.jwt_config
+        self.secret_key = jwt_config.secret_key if jwt_config.secret_key else secrets.token_hex(32)
+        self.algorithm = jwt_config.algorithm
+        self.access_token_expire_minutes = jwt_config.access_token_expire_minutes
+        self.refresh_token_expire_days = jwt_config.refresh_token_expire_days
 
     def create_access_token(self, user_id: str, email: str, role: str) -> str:
         """创建访问令牌"""
@@ -142,3 +145,33 @@ class TokenService:
         ).hexdigest()
 
         return hmac.compare_digest(signature, expected_signature)
+
+    def add_to_blacklist(self, token: str) -> None:
+        """将令牌加入黑名单
+
+        :param token: JWT 令牌
+        """
+        global _token_blacklist
+        _token_blacklist.add(token)
+
+    def is_blacklisted(self, token: str) -> bool:
+        """检查令牌是否在黑名单中
+
+        :param token: JWT 令牌
+        :return: 是否在黑名单中
+        """
+        return token in _token_blacklist
+
+    def verify_token_not_blacklisted(self, token: str) -> dict:
+        """验证令牌且不在黑名单中
+
+        :param token: JWT 令牌
+        :return: 令牌 payload
+        :raises: HTTPException 如果令牌无效或在黑名单中
+        """
+        if self.is_blacklisted(token):
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="令牌已失效"
+            )
+        return self.verify_token(token)

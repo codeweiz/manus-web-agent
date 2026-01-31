@@ -171,8 +171,9 @@ class DockerSandbox(Sandbox):
         # 如果到达这里，说明已经耗尽了所有重试次数
         error_message = f"沙箱服务在 {max_retries} 次尝试后未能启动 ({max_retries * retry_interval} 秒)"
         logger.error(error_message)
-        # TODO: 找到处理这个问题的方法
-        # raise Exception(error_message)
+        # 销毁失败的沙箱并抛出异常
+        await self.destroy()
+        raise RuntimeError(error_message)
 
     async def exec_command(self, session_id: str, exec_dir: str, command: str) -> ToolResult:
         """执行命令"""
@@ -345,15 +346,26 @@ class DockerSandbox(Sandbox):
 
     async def file_download(self, path: str) -> BinaryIO:
         """从沙箱下载文件"""
+        import tempfile
+        import shutil
+
         response = await self.client.get(
             f"{self.base_url}/api/v1/file/download",
-            params={"path": path}
+            params={"path": path},
+            timeout=300  # 增加下载超时时间
         )
         response.raise_for_status()
 
-        # 返回响应内容作为 BinaryIO 流
-        # TODO: 改为真正的流
-        return io.BytesIO(response.content)
+        # 对于小文件直接返回内存流
+        content_length = len(response.content)
+        if content_length < 10 * 1024 * 1024:  # 小于 10MB 使用内存流
+            return io.BytesIO(response.content)
+
+        # 大文件使用临时文件
+        temp_file = tempfile.NamedTemporaryFile(delete=False)
+        temp_file.write(response.content)
+        temp_file.seek(0)
+        return temp_file
 
     @staticmethod
     @alru_cache(maxsize=128, typed=True)

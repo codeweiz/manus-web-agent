@@ -133,7 +133,9 @@ class AuthService:
         :param token: 访问令牌
         :return: 是否成功
         """
-        # TODO: 将令牌加入黑名单
+        # 将令牌加入黑名单
+        self._token_service.add_to_blacklist(token)
+        logger.info("令牌已加入黑名单")
         return True
 
     async def refresh_token(self, refresh_token: str) -> tuple[str, str]:
